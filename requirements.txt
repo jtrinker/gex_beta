@@ -1,0 +1,11 @@
+pandas
+plotly
+numpy
+requests
+pandas_market_calendars
+streamlit
+yfinance
+scipy
+pytz
+py_vollib
+polygon-api-client

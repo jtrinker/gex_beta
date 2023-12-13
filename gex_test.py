@@ -238,24 +238,30 @@ def fetch_option_data(symbol, from_date, to_date):
 ###################################
 ###################################
 
-def convert_options_chain_to_df(options_chain, todayDate, nyse):
+def convert_options_chain_to_df(options_chain, stock_price, todayDate, nyse):
     # Initialize the list to hold processed option data
     processed_data = []
     market_is_open = is_market_open()
 
+    # Calculate the range of strike prices within +/- 15% of the stock_price
+    fromStrike = 0.85 * stock_price
+    toStrike = 1.15 * stock_price
+
     # Process each option in the options chain
     for option in options_chain:
-        contract_price = option.day.open if market_is_open else option.day.close
+        # Filter out options that don't fall within the specified strike range
+        if fromStrike <= option.details.strike_price <= toStrike:
+            contract_price = option.day.open if market_is_open else option.day.close
     
-        # Extract the required fields from each option
-        processed_data.append({
-            'Exp Date': option.details.expiration_date,
-            'Type': 'Call' if option.details.contract_type == 'call' else 'Put',
-            'Strike': round(option.details.strike_price, 2),
-            'Open Interest': option.open_interest if option.open_interest is not None else 0,
-            'IV': round(option.implied_volatility, 2) if option.implied_volatility is not None else 0,
-            'Contract Price': contract_price
-        })
+            # Extract the required fields from each option
+            processed_data.append({
+                'Exp Date': option.details.expiration_date,
+                'Type': 'Call' if option.details.contract_type == 'call' else 'Put',
+                'Strike': round(option.details.strike_price, 2),
+                'Open Interest': option.open_interest if option.open_interest is not None else 0,
+                'IV': round(option.implied_volatility, 2) if option.implied_volatility is not None else 0,
+                'Contract Price': contract_price
+            })
 
     # Convert the list of dictionaries into a DataFrame
     df = pd.DataFrame(processed_data)
@@ -302,11 +308,11 @@ def main():
             to_expiration = expirations[-1]
 
             option_chain_data = fetch_option_data(symbol, from_expiration, to_expiration)
-            calls, puts = convert_options_chain_to_df(option_chain_data, todayDate, nyse)
+            calls, puts = convert_options_chain_to_df(option_chain_data, stock_price, todayDate, nyse)
             
             # Create range of underlying prices -- this is for SPY. For SPX need to use +50/-50
-            min_price = stock_price - 1
-            max_price = stock_price + 1
+            min_price = stock_price - 50
+            max_price = stock_price + 50
             strike_range = np.arange(min_price, max_price + 1, 1)
 
             # get daily interest rate
@@ -315,7 +321,6 @@ def main():
             # Initialize a DataFrame to store call gammas
             call_gamma_df = pd.DataFrame()
 
-            counter = 0
             # Calculate gamma exposure (GEX) for calls
             for index, call in calls.iterrows():
                 # Skip options with missing 'greeks' or 'IV' data
@@ -348,10 +353,7 @@ def main():
                     thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
 
                 thisRate = rate * call['days2Exp']
-
-                if counter < 100:  # Check if the counter is less than 500
-                    print("contract price:", contract_price,"K", K,"thisVol:", thisVol)
-                counter += 1
+                
                 # Using the calculated or existing IV in the Black-Scholes Greeks function
                 gammas, deltas = black_scholes_greeks(S, K, T, thisRate, thisVol, flag=option_type)
 
@@ -365,16 +367,13 @@ def main():
                     'direction': 1
                 })
 
-                call_gamma_df = pd.concat([call_gamma_df, temp_df])git commit -km 
-                
-            call_gamma_df.to_csv("call_gamma_df.csv")
+                call_gamma_df = pd.concat([call_gamma_df, temp_df]) 
         
             # Calculate the GEX for calls aggregated by underlying price
             call_gamma_df['calls'] = call_gamma_df['Gamma'] * 100 * call_gamma_df['OI'] * call_gamma_df['underlyingClose']**2 * 0.01 * call_gamma_df['direction']
             #call_gamma_df.to_csv("call_gamma_df2.csv")
             call_gex = call_gamma_df.groupby('underlyingClose')['calls'].sum().reset_index()
 
-            call_gex.to_csv("call_gex.csv")
 ###################################
 ###################################
 
