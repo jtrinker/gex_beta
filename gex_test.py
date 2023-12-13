@@ -365,7 +365,7 @@ def main():
                     'direction': 1
                 })
 
-                call_gamma_df = pd.concat([call_gamma_df, temp_df])
+                call_gamma_df = pd.concat([call_gamma_df, temp_df])git commit -km 
                 
             call_gamma_df.to_csv("call_gamma_df.csv")
         
