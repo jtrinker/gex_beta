@@ -276,6 +276,52 @@ def convert_options_chain_to_df(options_chain, stock_price, todayDate, nyse):
 
     return calls_df, puts_df
 
+###########################################
+###########################################
+
+def calculate_gamma_exposure(options_df, stock_price, strike_range, rate, option_type_flag):
+    gamma_df = pd.DataFrame()
+
+    for index, option in options_df.iterrows():
+        if 'IV' not in option or np.isnan(option['IV']):
+            continue
+
+        S = stock_price
+        K = option['Strike']
+        T = option['days2Exp'] / 365.25
+        option_type = 'c' if option_type_flag == 'call' else 'p'
+
+        thisVol = option['IV'] if option['IV'] not in [0, 0.0, np.nan] else 0.1
+
+        contract_price = option['Contract Price']
+        if np.isnan(contract_price):
+            contract_price = bs_option_price(S, K, T, rate, thisVol, option_type)
+
+        if option['IV'] in [0, 0.0]:
+            thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
+
+        thisRate = rate * option['days2Exp']
+
+        gammas, deltas = black_scholes_greeks(S, K, T, thisRate, thisVol, flag=option_type)
+
+        OI = option['Open Interest']
+        direction = 1 if option_type_flag == 'call' else -1
+
+        temp_df = pd.DataFrame({
+            'Gamma': gammas,
+            'OI': OI,
+            'underlyingClose': strike_range,
+            'Strike': option['Strike'],
+            'direction': direction
+        })
+
+        gamma_df = pd.concat([gamma_df, temp_df])
+
+    gamma_df['gex'] = gamma_df['Gamma'] * 100 * gamma_df['OI'] * gamma_df['underlyingClose']**2 * 0.01 * gamma_df['direction']
+    gex_aggregated = gamma_df.groupby('underlyingClose')['gex'].sum().reset_index()
+
+    return gex_aggregated
+
 ###################################
 ###################################
 
@@ -318,61 +364,13 @@ def main():
             # get daily interest rate
             rate = get_sofr_rate()
 
-            # Initialize a DataFrame to store call gammas
-            call_gamma_df = pd.DataFrame()
+            # Calculate gamma exposure for calls
+            call_gex = calculate_gamma_exposure(calls, stock_price, strike_range, rate, 'call')
+            call_gex.to_csv("call_gex.csv")
 
-            # Calculate gamma exposure (GEX) for calls
-            for index, call in calls.iterrows():
-                # Skip options with missing 'greeks' or 'IV' data
-                if 'IV' not in call or np.isnan(call['IV']):
-                    continue
-
-                S = stock_price  # Current stock price
-                K = call['Strike']  # Strike price
-                T = call['days2Exp'] / 365.25  # Time to expiration in years
-                option_type = 'c' if call['Type'] == 'Call' else 'p'
-
-                if call['IV'] not in [0, 0.0, np.nan]:
-                    thisVol = call['IV']
-                else:
-                    thisVol = 0.1  # Placeholder for implied volatility
-
-                contract_price = call['Contract Price']
-                if np.isnan(contract_price):
-                    contract_price = bs_option_price(
-                        S=S, 
-                        K=K, 
-                        T=T, 
-                        r=rate, 
-                        sigma=thisVol, 
-                        option_type=option_type
-                    )
-
-                # If IV was zero, now calculate thisVol using the obtained contract_price
-                if call['IV'] in [0, 0.0]:
-                    thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
-
-                thisRate = rate * call['days2Exp']
-                
-                # Using the calculated or existing IV in the Black-Scholes Greeks function
-                gammas, deltas = black_scholes_greeks(S, K, T, thisRate, thisVol, flag=option_type)
-
-                OI = call['Open Interest']
-
-                temp_df = pd.DataFrame({
-                    'Gamma': gammas,
-                    'OI': OI,
-                    'underlyingClose': strike_range,
-                    'Strike': call['Strike'],
-                    'direction': 1
-                })
-
-                call_gamma_df = pd.concat([call_gamma_df, temp_df]) 
-        
-            # Calculate the GEX for calls aggregated by underlying price
-            call_gamma_df['calls'] = call_gamma_df['Gamma'] * 100 * call_gamma_df['OI'] * call_gamma_df['underlyingClose']**2 * 0.01 * call_gamma_df['direction']
-            #call_gamma_df.to_csv("call_gamma_df2.csv")
-            call_gex = call_gamma_df.groupby('underlyingClose')['calls'].sum().reset_index()
+            # Calculate gamma exposure for puts
+            put_gex = calculate_gamma_exposure(puts, stock_price, strike_range, rate, 'put')
+            put_gex.to_csv("put_gex.csv")
 
 ###################################
 ###################################
