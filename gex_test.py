@@ -318,9 +318,98 @@ def calculate_gamma_exposure(options_df, stock_price, strike_range, rate, option
         gamma_df = pd.concat([gamma_df, temp_df])
 
     gamma_df['gex'] = gamma_df['Gamma'] * 100 * gamma_df['OI'] * gamma_df['underlyingClose']**2 * 0.01 * gamma_df['direction']
+
     gex_aggregated = gamma_df.groupby('underlyingClose')['gex'].sum().reset_index()
 
     return gex_aggregated
+
+###################################
+###################################
+
+def find_gamma_flip_point(combined_gex_df):
+    # Find the index where the sign of 'Total' changes
+    flip_index = np.where(np.diff(np.sign(combined_gex_df['Total'])) != 0)[0]
+
+    # Extract the rows just before and after the flip point
+    if len(flip_index) > 0:
+        flip_index = flip_index[0]
+        neg2zero = combined_gex_df.iloc[flip_index]
+        pos2zero = combined_gex_df.iloc[flip_index + 1]
+
+        # Calculate the intersection point
+        p1 = [neg2zero['underlyingClose'], neg2zero['Total']]
+        p2 = [pos2zero['underlyingClose'], pos2zero['Total']]
+        x_intersection = (p1[0] * p2[1] - p1[1] * p2[0]) / (p1[1] - p2[1])
+        y_intersection = -p1[0] * -x_intersection / p1[1]
+
+        # Make the x-intersection positive
+        x_intersection = abs(x_intersection)
+
+        # Update the intersection points
+        combined_gex_df.at[flip_index, 'Total'] = round(y_intersection, 2)
+        combined_gex_df.at[flip_index + 1, 'Total'] = round(y_intersection, 2)
+        combined_gex_df.at[flip_index, 'underlyingClose'] = round(x_intersection, 2)
+        combined_gex_df.at[flip_index + 1, 'underlyingClose'] = round(x_intersection, 2)
+
+        # Store flip price
+        flip_prc = round(x_intersection, 2)
+
+        return flip_prc
+    
+###################################
+###################################
+    
+def plot_total_gex(combined_gex, flip_prc):
+    # Split the DataFrame
+    below_flip = combined_gex[combined_gex['underlyingClose'] <= flip_prc]
+    above_flip = combined_gex[combined_gex['underlyingClose'] >= flip_prc]
+
+    # Create traces
+    trace1 = go.Scatter(
+        x=below_flip['underlyingClose'],
+        y=below_flip['Total'],
+        fill='tozeroy',
+        mode='none',  # this means no line or markers
+        name='Below Flip',
+        fillcolor='red'
+    )
+
+    trace2 = go.Scatter(
+        x=above_flip['underlyingClose'],
+        y=above_flip['Total'],
+        fill='tozeroy',
+        mode='none',
+        name='Above Flip',
+        fillcolor='green'
+    )
+
+    # Layout
+    layout = go.Layout(
+        title=f'$SPY GEX - All Option Chains',
+        xaxis=dict(title='Underlying Close'),
+        yaxis=dict(title='Total GEX'),
+        showlegend=False,
+        annotations=[
+            dict(
+                x=flip_prc,
+                y=0,
+                xref='x',
+                yref='y',
+                text=f'Flip Price: ${flip_prc}',
+                showarrow=True,
+                arrowhead=7,
+                ax=0,
+                ay=-40
+            )
+        ]
+    )
+
+    # Figure
+    fig = go.Figure(data=[trace1, trace2], layout=layout)
+
+    # Show plot
+    st.plotly_chart(fig, use_container_width=True)
+
 
 ###################################
 ###################################
@@ -366,11 +455,18 @@ def main():
 
             # Calculate gamma exposure for calls
             call_gex = calculate_gamma_exposure(calls, stock_price, strike_range, rate, 'call')
-            call_gex.to_csv("call_gex.csv")
 
             # Calculate gamma exposure for puts
             put_gex = calculate_gamma_exposure(puts, stock_price, strike_range, rate, 'put')
-            put_gex.to_csv("put_gex.csv")
+
+            combined_gex = pd.merge(call_gex, put_gex, on='underlyingClose', how='outer', suffixes=('_call', '_put'))
+            combined_gex.fillna(0, inplace=True)
+            combined_gex['Total'] = combined_gex['gex_call'] + combined_gex['gex_put']
+
+            #combined_gex.to_csv("combined_gex.csv")
+
+            flip_point = find_gamma_flip_point(combined_gex)
+            plot_total_gex(combined_gex, flip_point)
 
 ###################################
 ###################################
