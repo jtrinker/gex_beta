@@ -280,48 +280,57 @@ def convert_options_chain_to_df(options_chain, stock_price, todayDate, nyse):
 ###########################################
 
 def calculate_gamma_exposure(options_df, stock_price, strike_range, rate, option_type_flag):
-    gamma_df = pd.DataFrame()
+    gammas = []
+    OIs = []
+    underlyingCloses = []
+    Strikes = []
+    directions = []
 
-    for index, option in options_df.iterrows():
-        if 'IV' not in option or np.isnan(option['IV']):
-            continue
+    for strike in strike_range:
+        for index, option in options_df.iterrows():
+            if 'IV' not in option or np.isnan(option['IV']):
+                continue
 
-        S = stock_price
-        K = option['Strike']
-        T = option['days2Exp'] / 365.25
-        option_type = 'c' if option_type_flag == 'call' else 'p'
+            S = stock_price
+            K = option['Strike']
+            T = option['days2Exp'] / 365.25
+            option_type = 'c' if option_type_flag == 'call' else 'p'
 
-        thisVol = option['IV'] if option['IV'] not in [0, 0.0, np.nan] else 0.1
+            thisVol = option['IV'] if option['IV'] not in [0, 0.0, np.nan] else 0.1
 
-        contract_price = option['Contract Price']
-        if np.isnan(contract_price):
-            contract_price = bs_option_price(S, K, T, rate, thisVol, option_type)
+            contract_price = option['Contract Price']
+            if np.isnan(contract_price):
+                contract_price = bs_option_price(S, K, T, rate, thisVol, option_type)
 
-        if option['IV'] in [0, 0.0]:
-            thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
+            if option['IV'] in [0, 0.0]:
+                thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
 
-        thisRate = rate * option['days2Exp']
+            thisRate = rate * option['days2Exp']
 
-        gammas, deltas = black_scholes_greeks(S, K, T, thisRate, thisVol, flag=option_type)
+            gamma, delta = black_scholes_greeks(S, K, T, thisRate, thisVol, flag=option_type)
 
-        OI = option['Open Interest']
-        direction = 1 if option_type_flag == 'call' else -1
+            gammas.append(gamma)
+            OIs.append(option['Open Interest'])
+            underlyingCloses.append(strike)
+            Strikes.append(K)
+            directions.append(1 if option_type_flag == 'call' else -1)
 
-        temp_df = pd.DataFrame({
-            'Gamma': gammas,
-            'OI': OI,
-            'underlyingClose': strike_range,
-            'Strike': option['Strike'],
-            'direction': direction
-        })
-
-        gamma_df = pd.concat([gamma_df, temp_df])
+    gamma_df = pd.DataFrame({
+        'Gamma': gammas,
+        'OI': OIs,
+        'underlyingClose': underlyingCloses,
+        'Strike': Strikes,
+        'direction': directions
+    })
 
     gamma_df['gex'] = gamma_df['Gamma'] * 100 * gamma_df['OI'] * gamma_df['underlyingClose']**2 * 0.01 * gamma_df['direction']
+    gamma_df['gex'] = pd.to_numeric(gamma_df['gex'], errors='coerce')
 
     gex_aggregated = gamma_df.groupby('underlyingClose')['gex'].sum().reset_index()
 
     return gex_aggregated
+
+
 
 ###################################
 ###################################
@@ -329,12 +338,16 @@ def calculate_gamma_exposure(options_df, stock_price, strike_range, rate, option
 def find_gamma_flip_point(combined_gex_df):
     # Find the index where the sign of 'Total' changes
     flip_index = np.where(np.diff(np.sign(combined_gex_df['Total'])) != 0)[0]
+    print("Flip Index:", flip_index)  # Debug print
 
     # Extract the rows just before and after the flip point
     if len(flip_index) > 0:
         flip_index = flip_index[0]
         neg2zero = combined_gex_df.iloc[flip_index]
         pos2zero = combined_gex_df.iloc[flip_index + 1]
+
+        print("Neg2Zero:", neg2zero)
+        print("Pos2Zero:", pos2zero)
 
         # Calculate the intersection point
         p1 = [neg2zero['underlyingClose'], neg2zero['Total']]
@@ -353,27 +366,38 @@ def find_gamma_flip_point(combined_gex_df):
 
         # Store flip price
         flip_prc = round(x_intersection, 2)
+        print("Calculated Flip Price:", flip_prc)  # Debug print
 
         return flip_prc
+    else:
+        # Handle case with no flip point
+        print("No flip point found.")
+        return None
     
 ###################################
 ###################################
     
 def plot_total_gex(combined_gex, flip_prc):
+    print("Combined GEX Head:", combined_gex.head())  # Debug print
+    print("Flip Price:", flip_prc)  # Debug print
+
     # Split the DataFrame
     below_flip = combined_gex[combined_gex['underlyingClose'] <= flip_prc]
     above_flip = combined_gex[combined_gex['underlyingClose'] >= flip_prc]
+
+    # Check if data exists in split dataframes
+    print("Below Flip Data Count:", len(below_flip))  # Debug print
+    print("Above Flip Data Count:", len(above_flip))  # Debug print
 
     # Create traces
     trace1 = go.Scatter(
         x=below_flip['underlyingClose'],
         y=below_flip['Total'],
         fill='tozeroy',
-        mode='none',  # this means no line or markers
+        mode='none',
         name='Below Flip',
         fillcolor='red'
     )
-
     trace2 = go.Scatter(
         x=above_flip['underlyingClose'],
         y=above_flip['Total'],
@@ -455,7 +479,7 @@ def main():
 
             # Calculate gamma exposure for calls
             call_gex = calculate_gamma_exposure(calls, stock_price, strike_range, rate, 'call')
-
+            
             # Calculate gamma exposure for puts
             put_gex = calculate_gamma_exposure(puts, stock_price, strike_range, rate, 'put')
 
@@ -463,7 +487,7 @@ def main():
             combined_gex.fillna(0, inplace=True)
             combined_gex['Total'] = combined_gex['gex_call'] + combined_gex['gex_put']
 
-            #combined_gex.to_csv("combined_gex.csv")
+            combined_gex.to_csv("combined_gex.csv")
 
             flip_point = find_gamma_flip_point(combined_gex)
             plot_total_gex(combined_gex, flip_point)
