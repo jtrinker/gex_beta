@@ -280,57 +280,63 @@ def convert_options_chain_to_df(options_chain, stock_price, todayDate, nyse):
 ###########################################
 
 def calculate_gamma_exposure(options_df, stock_price, strike_range, rate, option_type_flag):
-    gammas = []
-    OIs = []
-    underlyingCloses = []
-    Strikes = []
-    directions = []
+    gamma_list = []
+    OI_list = []
+    underlyingClose_list = []
+    Strike_list = []
+    direction_list = []
 
-    for strike in strike_range:
-        for index, option in options_df.iterrows():
-            if 'IV' not in option or np.isnan(option['IV']):
-                continue
+    # Iterate through each option
+    for _, option in options_df.iterrows():
+        if 'IV' not in option or pd.isna(option['IV']):
+            continue
 
-            S = stock_price
-            K = option['Strike']
-            T = option['days2Exp'] / 365.25
-            option_type = 'c' if option_type_flag == 'call' else 'p'
+        S = stock_price
+        K = option['Strike']
+        T = option['days2Exp'] / 365.25
+        option_type = 'c' if option_type_flag == 'call' else 'p'
+        thisVol = option['IV'] if not pd.isna(option['IV']) else 0.1
+        contract_price = option['Contract Price'] if not pd.isna(option['Contract Price']) else None
+        OI = option['Open Interest']
 
-            thisVol = option['IV'] if option['IV'] not in [0, 0.0, np.nan] else 0.1
+        if contract_price is None or pd.isna(contract_price):
+            contract_price = bs_option_price(S, K, T, rate, thisVol, option_type)
 
-            contract_price = option['Contract Price']
-            if np.isnan(contract_price):
-                contract_price = bs_option_price(S, K, T, rate, thisVol, option_type)
+        if thisVol in [0, 0.0]:
+            thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
 
-            if option['IV'] in [0, 0.0]:
-                thisVol = calculate_implied_volatility(contract_price, S, K, T, rate, option_type)
+        thisRate = rate * option['days2Exp']
 
-            thisRate = rate * option['days2Exp']
-
-            gamma, delta = black_scholes_greeks(S, K, T, thisRate, thisVol, flag=option_type)
-
-            gammas.append(gamma)
-            OIs.append(option['Open Interest'])
-            underlyingCloses.append(strike)
-            Strikes.append(K)
-            directions.append(1 if option_type_flag == 'call' else -1)
+        # Calculate gamma for each strike price in strike_range
+        for strike_price in strike_range:
+            gamma, _ = black_scholes_greeks(strike_price, K, T, thisRate, thisVol, flag=option_type)
+            gamma_list.append(gamma)
+            OI_list.append(OI)
+            underlyingClose_list.append(strike_price)
+            Strike_list.append(K)
+            direction_list.append(1 if option_type_flag == 'call' else -1)
 
     gamma_df = pd.DataFrame({
-        'Gamma': gammas,
-        'OI': OIs,
-        'underlyingClose': underlyingCloses,
-        'Strike': Strikes,
-        'direction': directions
+        'Gamma': gamma_list,
+        'OI': OI_list,
+        'underlyingClose': underlyingClose_list,
+        'Strike': Strike_list,
+        'direction': direction_list
     })
 
+    # Ensure numeric data types
+    gamma_df['Gamma'] = pd.to_numeric(gamma_df['Gamma'], errors='coerce')
+    gamma_df['OI'] = pd.to_numeric(gamma_df['OI'], errors='coerce')
+    gamma_df['Strike'] = pd.to_numeric(gamma_df['Strike'], errors='coerce')
+
+    # Calculate 'gex'
     gamma_df['gex'] = gamma_df['Gamma'] * 100 * gamma_df['OI'] * gamma_df['underlyingClose']**2 * 0.01 * gamma_df['direction']
     gamma_df['gex'] = pd.to_numeric(gamma_df['gex'], errors='coerce')
 
+    # Aggregate gex
     gex_aggregated = gamma_df.groupby('underlyingClose')['gex'].sum().reset_index()
 
     return gex_aggregated
-
-
 
 ###################################
 ###################################
@@ -409,7 +415,7 @@ def plot_total_gex(combined_gex, flip_prc):
 
     # Layout
     layout = go.Layout(
-        title=f'$SPY GEX - All Option Chains',
+        title=f'$SPY GEX - All Expirations',
         xaxis=dict(title='Underlying Close'),
         yaxis=dict(title='Total GEX'),
         showlegend=False,
